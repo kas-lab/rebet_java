@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Comparator;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.concurrent.Future;
 import java.util.Map;
 import java.util.function.Function;
@@ -14,12 +15,13 @@ import java.io.File;
 
 import org.ros2.rcljava.RCLJava;
 import org.ros2.rcljava.concurrent.Callback;
-import org.ros2.rcljava.node.BaseComposableNode;
+import org.ros2.rcljava.node.BetterComposableNode;
 import org.ros2.rcljava.publisher.Publisher;
 import org.ros2.rcljava.client.Client;
 import org.ros2.rcljava.service.Service;
 import org.ros2.rcljava.timer.WallTimer;
 import org.ros2.rcljava.service.RMWRequestId;
+import org.ros2.rcljava.parameters.*;
 
 import rcl_interfaces.msg.ParameterValue;
 
@@ -56,6 +58,10 @@ import de.fraunhofer.ipa.ros2.Ros2StandaloneSetupGenerated;
 import de.fraunhofer.ipa.ros.RosStandaloneSetupGenerated;
 import ros.Package;
 import ros.RosPackage;
+
+import org.ros2.rcljava.parameters.service.ParameterService;
+import org.ros2.rcljava.parameters.service.ParameterServiceImpl;
+
 
 import org.eclipse.emf.ecore.resource.Resource;
 import org.eclipse.emf.ecore.EObject;
@@ -104,7 +110,7 @@ class AtomicRuleWithPriorityComparator implements Comparator<AtomicRuleWithPrior
 
 }
 
-public class AdaptationEngine extends BaseComposableNode {
+public class AdaptationEngine extends BetterComposableNode {
   private int count;
 
   private Publisher<std_msgs.msg.String> publisher;
@@ -176,35 +182,36 @@ public class AdaptationEngine extends BaseComposableNode {
 
  private void loadAllModels()
  {
+	java.lang.System.out.println("Loading models...");
+	java.lang.System.out.println(getNode().getParameter("ros2_path").asString());
 	loadModel(
         new RosStandaloneSetupGenerated(),
         "ros",
-        "/home/ega/lifecycle_msgs.ros",
-        "/home/ega/common_msgs.ros"
+        getNode().getParameter("ros_path").asStringArray()
     );
 
 	loadModel(
         new Ros2StandaloneSetupGenerated(),
         "ros2",
-        "/home/ega/velocity_smoother.ros2"
+        getNode().getParameter("ros2_path").asString()
     );
 
 	loadModel(
         new RosSystemStandaloneSetupGenerated(),
         "rossystem",
-        "/home/ega/rebetmirte.rossystem"
+        getNode().getParameter("rossystem_path").asString()
     );
 
 	loadModel(
         new ResolutionModelStandaloneSetupGenerated(),
         "resolution",
-        "/home/ega/rebetmc.resolution"
+        getNode().getParameter("resolution_path").asString()
     );
 
 	List<Resource> tacticsResources = loadModel(
 		new TacticsStandaloneSetupGenerated(),
 		"tactics",
-		"/home/ega/rebetinternal.tactics"
+		getNode().getParameter("tactics_path").asString()
 	);
 
 	Resource tacticsModelResource = tacticsResources.get(0);
@@ -481,15 +488,25 @@ public class AdaptationEngine extends BaseComposableNode {
   public void handleService(final RMWRequestId header,
       final aal_msgs.srv.AdaptArchitectureTactical_Request request,
       final aal_msgs.srv.AdaptArchitectureTactical_Response response) {
+	loadAllModels();
     
 	for( AdaptationRule rule : tacticsModel.getAdaptationRules() ){
 		evaluateAndExecuteAdaptationRule(rule);
 	}
   }
 
-  public AdaptationEngine() throws Exception {
-    super("adaptation_engine");
+  public AdaptationEngine(ArrayList<String> cli_args) throws Exception {
+    super("adaptation_engine",cli_args);
+
+	ParameterService parameterService = new ParameterServiceImpl(getNode());
     this.count = 0;
+	getNode().declareParameter(new ParameterVariant("tactics_path", ""));
+	getNode().declareParameter(new ParameterVariant("resolution_path", ""));
+	getNode().declareParameter(new ParameterVariant("rossystem_path", ""));
+	String[] paths = {"", ""};
+	getNode().declareParameter(new ParameterVariant("ros_path", paths));
+	getNode().declareParameter(new ParameterVariant("ros2_path", ""));
+
 	java.lang.System.out.println("Got here!");
     
 	this.context_client = node.<rebet_msgs.srv.GetContextVar>createClient(rebet_msgs.srv.GetContextVar.class, "/get_context_var");
@@ -502,16 +519,21 @@ public class AdaptationEngine extends BaseComposableNode {
                 -> this.handleService(header, request, response));
 
 	registerEPackages();
-	loadAllModels();
 
     java.lang.System.out.println("Got here!");
-    java.lang.System.out.println("Number of tactics: " + tacticsModel.getAdaptationRules().size());
+    // java.lang.System.out.println("Number of tactics: " + tacticsModel.getAdaptationRules().size());
   }
 
   public static void main(String[] args) throws InterruptedException, Exception {
     // Initialize RCL
+	//print all the args
+	java.lang.System.out.println("Args: ");
+	for (String arg : args) {
+		java.lang.System.out.println(arg);
+	}
+	
     RCLJava.rclJavaInit();
 
-    RCLJava.spin(new AdaptationEngine());
+    RCLJava.spin(new AdaptationEngine(new ArrayList<>(Arrays.asList(args))));
   }
 }
