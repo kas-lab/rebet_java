@@ -19,14 +19,60 @@ public class Test {
 
     // Let's create a Node
     NodeOptions options = new NodeOptions();
-    options.setAllowUndeclaredParameters(true);
-    options.setCliArgs(new ArrayList<String>(Arrays.asList("--ros-args", "-p", "test_param:=foo")));
+    options.setCliArgs(new ArrayList<String>(Arrays.asList("--ros-args", "-p", "int_param:=42", "-p", "test_param:=false")));
     Node node = RCLJava.createNode("test_node", "", RCLJava.getDefaultContext(), options);
-    // node.declareParameter(new ParameterVariant("test_param", ""));
+
+    
+    //print node.parameterOverrides which is of type HashMap<String, ParameterVariant>
+    node.getParameterOverrides().forEach((key, value) -> {
+    switch (value.getType()) {
+      case ParameterType.PARAMETER_BOOL:
+        System.out.println("Parameter Name: " + key + ", Value: " + value.asBool());
+        break;
+      case ParameterType.PARAMETER_INTEGER:
+        System.out.println("Parameter Name: " + key + ", Value: " + value.asInt());
+        break;
+      case ParameterType.PARAMETER_DOUBLE:
+        System.out.println("double");
+        break;
+      case ParameterType.PARAMETER_STRING:
+        System.out.println("string");
+        break;
+      case ParameterType.PARAMETER_BYTE_ARRAY:
+        System.out.println("byte_array");
+        break;
+      case ParameterType.PARAMETER_BOOL_ARRAY:
+        System.out.println("bool_array");
+        break;
+      case ParameterType.PARAMETER_INTEGER_ARRAY:
+        System.out.println("integer_array");
+        break;
+      case ParameterType.PARAMETER_DOUBLE_ARRAY:
+        System.out.println("double_array");
+        break;
+      case ParameterType.PARAMETER_STRING_ARRAY:
+        System.out.println("string_array");
+        break;
+      case ParameterType.PARAMETER_NOT_SET:
+        System.out.println("not set");
+        break;
+      default:
+        throw new IllegalArgumentException(
+            "Unexpected type from ParameterVariant: " + value.getType());
+    }
+    
+    });
+
+    node.declareParameter(new ParameterVariant("test_param", true));
+    node.declareParameter(new ParameterVariant("int_param", 1337));
+    node.declareParameter(new ParameterVariant("twint_param", 1337));
+
+
+
     System.out.println("Node created: " + node.getName());
     System.out.println("Node namespace should be /foo " + node.getNamespace());
-    System.out.println("Node parameter should be foo " + node.getParameter("test_param").asString());
-
+    System.out.println("Node parameter should be false " + node.getParameter("test_param").asBool());
+    System.out.println("Node parameter should be 42 " + node.getParameter("int_param").asInt());
 
     // Publishers are type safe, make sure to pass the message type
     Publisher<std_msgs.msg.String> publisher =
@@ -37,7 +83,7 @@ public class Test {
     int publishCount = 0;
 
     while (RCLJava.ok()) {
-      message.setData("Hello, world! " + publishCount);
+      message.setData("Bello, world! " + publishCount);
       publishCount++;
       System.out.println("Publishing: [" + message.getData() + "]");
       publisher.publish(message);

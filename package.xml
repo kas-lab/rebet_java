@@ -19,6 +19,7 @@
   <build_depend>sensor_msgs</build_depend>
   <build_depend>rebet_msgs</build_depend>
   <build_depend>aal_msgs</build_depend>
+  <build_depend>ros_typedb_msgs</build_depend>
 
 
   <exec_depend>rosidl_generator_java</exec_depend>
@@ -28,6 +29,7 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>rebet_msgs</exec_depend>
   <exec_depend>aal_msgs</exec_depend>
+  <exec_depend>ros_typedb_msgs</exec_depend>
 
 
 
