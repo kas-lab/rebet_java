@@ -23,6 +23,7 @@ import org.ros2.rcljava.publisher.Publisher;
 import org.ros2.rcljava.client.Client;
 import org.ros2.rcljava.service.Service;
 import org.ros2.rcljava.timer.WallTimer;
+import org.w3c.dom.Node;
 import org.ros2.rcljava.service.RMWRequestId;
 import org.ros2.rcljava.parameters.*;
 import org.ros2.rcljava.graph.NodeNameInfo;
@@ -107,36 +108,11 @@ import org.eclipse.emf.ecore.EReference;
 import org.eclipse.xtext.resource.IEObjectDescription;
 import com.google.common.base.Predicate;
 
+import org.ros2.rcljava.rebet_java.RosTypeDBInterface;
 
-
-
-
-class AtomicRuleWithPriorityComparator implements Comparator<AtomicRuleWithPriority> {
-
-	
-	
-	/*
-	 * This is designed in such a way that a rule with priority 0 is stored
-	 * after a rule with priority 1.
-	 * (non-Javadoc)
-	 * @see java.util.Comparator#compare(java.lang.Object, java.lang.Object)
-	 */
-	@Override
-	public int compare(AtomicRuleWithPriority arg0, AtomicRuleWithPriority arg1) {
-
-		if(arg0.getPriorityValue() < arg1.getPriorityValue()){
-			return 1;
-		}else if(arg0.getPriorityValue() == arg1.getPriorityValue()){
-			return 0;
-		}else{ // (arg0.getPriorityValue() > arg1.getPriorityValue()){
-			return -1;
-		}
-
-	}
-
-
-
-}
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class AdaptationEngine extends BetterComposableNode {
   private int count;
@@ -151,7 +127,7 @@ public class AdaptationEngine extends BetterComposableNode {
 
   private Service<aal_msgs.srv.AdaptArchitectureTactical> adaptation_service;
 
-  private WallTimer timer;
+  private WallTimer tacticsTimer;
 
   private ResourceSet resSet = new XtextResourceSet();
 
@@ -159,6 +135,8 @@ public class AdaptationEngine extends BetterComposableNode {
  
 
   private TacticsModel tacticsModel;
+
+  private TacticsGenerator generator;
 
 
 public void printVisibleReferences(
@@ -331,229 +309,137 @@ private static void printIndent(int indent) {
 	tacticsModel = (TacticsModel) tacticsModelResource.getContents().get(0);
  }
 
-  private void evaluateAndExecuteAdaptationRule(AdaptationRule rule){
+private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name){
+	try {
+	rebet_msgs.srv.GetContextVar_Request request = new rebet_msgs.srv.GetContextVar_Request();
+	request.setVariableName(variable_name);
 
-		if(rule instanceof AtomicRule){
-			evaluateAndExecuteAtomicRule( ((AtomicRule) rule).getRuleBody());
-		}else if(rule instanceof RuleSet){
-			evaluateAndExecuteRuleSet( (RuleSet) rule);
-		}
+	if(this.context_client.waitForService()){
+		java.lang.System.out.println("Service is available");
+		Future<rebet_msgs.srv.GetContextVar_Response> future = this.context_client.asyncSendRequest(request);
+		
+		rcl_interfaces.msg.ParameterValue res = future.get().getVariableValue();
+		java.lang.System.out.println("Result: " + res.getDoubleValue());
 
+		return res;
 	}
-
-	private void evaluateAndExecuteAtomicRule(RuleBody ruleBody){
-
-		if(ruleBody instanceof PureAction){
-
-			executeAtomicAction(ruleBody.getAtomicAction());
-
-		}else if(ruleBody instanceof ConditionAction){
-			evaluateAndExecuteConditionAction((ConditionAction)ruleBody);
-		}
-
+	else{
+		java.lang.System.out.println("Service is not available");
+		return null;
 	}
-
-	private void evaluateAndExecuteConditionAction(ConditionAction conditionAction){
-
-		if(evaluateConditionChain(conditionAction.getCondition()) == false){
-
-			if(conditionAction.getElse() != null){
-				evaluateAndExecuteAtomicRule(conditionAction.getElse());
-			}else{
-				return;
-			}
-
-		}else{
-			executeAtomicAction(conditionAction.getAtomicAction());
-		}
 	}
-
-	private boolean evaluateConditionChain(Condition condition){
-
-		if(condition.getSecondTerm() == null){
-			return evaluateCondition(condition);
-		}
-
-		if(condition.getLogicalOp() == LogicalOperator.AND){
-			return evaluateCondition(condition) && evaluateConditionChain(condition.getSecondTerm());
-		}else if (condition.getLogicalOp() == LogicalOperator.OR){
-			return evaluateCondition(condition) || evaluateConditionChain(condition.getSecondTerm());
-		}
-
-		return false;
-
-
+	catch (Exception e) {
+		java.lang.System.out.println("Error in requestContextVar");
+		e.printStackTrace();
+		return null;
 	}
+}
 
-	private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name){
+	private boolean requestAdaptation(List<aal_msgs.msg.Adaptation> adaptations) {
 		try {
-		rebet_msgs.srv.GetContextVar_Request request = new rebet_msgs.srv.GetContextVar_Request();
-		request.setVariableName(variable_name);
+			aal_msgs.srv.AdaptArchitecture_Request request = new aal_msgs.srv.AdaptArchitecture_Request();
+			request.setAdaptations(adaptations);
 
-		if(this.context_client.waitForService()){
-			java.lang.System.out.println("Service is available");
-			Future<rebet_msgs.srv.GetContextVar_Response> future = this.context_client.asyncSendRequest(request);
-			
-			rcl_interfaces.msg.ParameterValue res = future.get().getVariableValue();
-			java.lang.System.out.println("Result: " + res.getDoubleValue());
 
-			return res;
-		}
-		else{
-			java.lang.System.out.println("Service is not available");
-			return null;
-		}
+			if (this.aal_client.waitForService()) {
+				java.lang.System.out.println("Service is available");
+				Future<aal_msgs.srv.AdaptArchitecture_Response> future = this.aal_client.asyncSendRequest(request);
+				java.lang.System.out.println("Result: " + future.get().getSuccess());
+				return future.get().getSuccess();
+			} else {
+				java.lang.System.out.println("Service is not available");
+			}	
 		}
 		catch (Exception e) {
-			java.lang.System.out.println("Error in requestContextVar");
+			java.lang.System.out.println("Error in selectFeature");
 			e.printStackTrace();
-			return null;
 		}
+		return false;
 	}
+	
 
-	private String printParameterValue(rcl_interfaces.msg.ParameterValue value){
-		StringBuilder sb = new StringBuilder();
-		sb.append("ParameterValue: ");
-		sb.append("Type: ").append(value.getType()).append(", ");
-		sb.append("DoubleArray: ").append(value.getDoubleArrayValue()).append(", ");
-		sb.append("StringArray: ").append(value.getStringArrayValue()).append(", ");
-		sb.append("BoolArray: ").append(value.getBoolArrayValue()).append(", ");
-		sb.append("ByteArray: ").append(value.getByteArrayValue()).append(", ");
-		sb.append("IntArray: ").append(value.getIntegerArrayValue()).append(", ");
-		sb.append("DoubleValue: ").append(value.getDoubleValue()).append(", ");
-		sb.append("StringValue: ").append(value.getStringValue()).append(", ");
-		sb.append("BoolValue: ").append(value.getBoolValue()).append(", ");
-		return sb.toString();
-	}
-
-	private void requestTypedbQuery(String query, String queryType) {
+	private List<ros_typedb_msgs.msg.ResultTree> requestTypedbQuery(String query, String queryType) {
 		try {
 			ros_typedb_msgs.srv.Query_Request request = new ros_typedb_msgs.srv.Query_Request();
 			request.setQuery(query);
 			request.setQueryType(queryType);
 			if (this.typedb_client.waitForService()) {
-				java.lang.System.out.println("Service is available");
+				java.lang.System.out.println("TYPEDB Service is available");
 				Future<ros_typedb_msgs.srv.Query_Response> future = this.typedb_client.asyncSendRequest(request);
 				ros_typedb_msgs.srv.Query_Response response = future.get();
-				java.lang.System.out.println("Result: " + response.getSuccess());
-				java.lang.System.out.println("Num results: " + response.getResults().size());
-				response.getResults().forEach(result -> {
-					java.lang.System.out.println("Result: " + result.getVariableName() + " " + result.getVariableType());
-					result.getAttributes().forEach(att -> {
-					java.lang.System.out.println("Result: " + att.getName() + " " + att.getLabel() + " " + printParameterValue(att.getValue()));
-					});
-				});
-			} else {
+
+				if( response.getSuccess() == false) {
+					throw new IllegalStateException("Query to TypeDB Failed");
+				}
+				
+				return response.getResults();
+					
+						
+				
+			} 
+			else {
 				java.lang.System.out.println("Service is not available");
 			}
 		} catch (Exception e) {
 			java.lang.System.out.println("Error in requestTypedbQuery");
 			e.printStackTrace();
 		}
+		return new ArrayList<>();
 	}
 
-	private boolean evaluateCondition(Condition condition){
-	java.lang.System.out.println("Evaluating condition");
-    // Object value = lastReceivedMessages.get(cdm);
-    String measurement = condition.getMeasurement();
-	//demo requestContextVar
-	rcl_interfaces.msg.ParameterValue value = null;
-	try {
-		value = requestContextVar(measurement);
-	}
-	catch (Exception e) {
-		java.lang.System.out.println("Error in requestContextVar");
-		e.printStackTrace();
-	}
+	private aal_msgs.msg.Adaptation processSetParameter(List<ros_typedb_msgs.msg.ResultTree> results) {
+		java.lang.System.out.println("Processing SetParameter results \n");
+		String node_name;
+		List<ros_typedb_msgs.msg.IndexList> index_lists = null;
+		int result_index = -1;
 
-		if(value == null){
-			return false;
+		for (int i = 0; i < results.size(); i++) {
+			ros_typedb_msgs.msg.ResultTree result_tree = results.get(i);
+			for (ros_typedb_msgs.msg.QueryResult q_result : result_tree.getResults()) {
+				if (q_result.getType() == ros_typedb_msgs.msg.QueryResult.SUB_QUERY && q_result.getSubQueryName().equals(TacticsGenerator.SUBQUERY_NAME)) {
+					index_lists = q_result.getChildrenIndex();
+					result_index = i;
+				}
+			}
 		}
 
-		//TODO: logic to handle ParameterValues.
-		String val = "";
-		if(false){
-			// val = (String)value;
-			java.lang.System.out.println("Wut");
-		}else{
-			java.lang.System.out.println("Parse ParameterValue");
-			val = String.valueOf(value.getDoubleValue());
-			// val = String.valueOf(value);
+		if (index_lists == null || result_index < 0) {
+			java.lang.System.out.println("No index list found in results");
+			throw new IllegalStateException("No index list found in results");
 		}
 
-		val.compareTo(condition.getValue());
+		ros_typedb_msgs.msg.ResultTree result_tree = results.get(result_index);
 
-		if(condition.getOperator() == MathOperator.LESS){
-			return val.compareTo(condition.getValue()) == -1;
-		}else if(condition.getOperator() == MathOperator.GREATER){
-			return val.compareTo(condition.getValue()) == 1;
-		}else if(condition.getOperator() == MathOperator.EQUAL){
-			return val.compareTo(condition.getValue()) == 0;
-		}else if(condition.getOperator() == MathOperator.DIFFERENT){
-			return val.compareTo(condition.getValue()) != 0;
-		}
+		List<Double> parameterValues = new ArrayList<Double>(index_lists.size());
+		double b = 0.0;
 
-		return true;
-	}
+		parameterValues = RosTypeDBInterface.extractParameterValues(Double.class, index_lists, result_tree, TacticsGenerator.INDEX_VAR);
+		node_name = RosTypeDBInterface.extractStringAttribute(result_tree,TacticsGenerator.NODE_VAR,"node_name");
 
-	private void evaluateAndExecuteRuleSet(RuleSet ruleSet){
+		java.lang.System.out.println("Node name: " + node_name);
 
+		String param_name = RosTypeDBInterface.extractStringAttribute(result_tree,"parameter","parameter_name");
+		java.lang.System.out.println("Parameter name: " + param_name);
+		aal_msgs.msg.Adaptation adaptation = new aal_msgs.msg.Adaptation();
+		adaptation.setAdaptationTarget((byte)1);
 
-		// 1) Create a rule set with rules ordered based on priority
-		// As soon as the DLS grammar will be stable the comparator should be moved
-		// in the class AtomicRuleWithPriority
-		TreeSet<AtomicRuleWithPriority> rules = new TreeSet<AtomicRuleWithPriority>(new AtomicRuleWithPriorityComparator());
+		rcl_interfaces.msg.ParameterValue value = new rcl_interfaces.msg.ParameterValue();
 
-		rules.addAll(ruleSet.getAtomicRules());
+		value.setDoubleArrayValue(parameterValues);
+		value.setType(rcl_interfaces.msg.ParameterType.PARAMETER_DOUBLE_ARRAY);
 
-		// 2) Execute the actions starting form max priority to min priority 
+		rcl_interfaces.msg.Parameter param = new rcl_interfaces.msg.Parameter();
 
-		for(AtomicRuleWithPriority action : rules){
+		param.setValue(value);
+	
+		adaptation.setNodeName(node_name);
 
-			evaluateAndExecuteAtomicRule(action.getRuleBody());
+		param.setName(param_name);
 
-		}
+		adaptation.setParameterAdaptation(param);
 
-	}
-
-	private void executeAtomicAction(AtomicAction atomicAction){
-
-		if(atomicAction instanceof AtomicActionSelectFeature){
-
-			AtomicActionSelectFeature currentAction = (AtomicActionSelectFeature)atomicAction;
-
-			selectFeature(currentAction.getVariant());
-			//java.lang.System.out.println("Select Feature: " + currentAction.getFeature().getName());
-
-		}else if(atomicAction instanceof AtomicActionDeselectFeature){
-
-			AtomicActionDeselectFeature currentAction = (AtomicActionDeselectFeature)atomicAction;
-
-			// to be improved, see select feature
-			// featureModel.removeSubFeatureFromInstance(currentFeatureModelInstance, currentAction.getVariant());
-			//currentFeatureModelInstance.getSelectedFeatures().remove(currentAction.getFeature());
-			//java.lang.System.out.println("Deselect Feature: " + currentAction.getFeature().getName());
-
-		}
-		// else if(atomicAction instanceof AtomicActionModifyAttribute){
-
-		// 	AtomicActionModifyAttribute currentAction = (AtomicActionModifyAttribute)atomicAction;
-
-
-
-		// }
-		// else if(atomicAction instanceof AtomicActionQuery){
-
-		// 	AtomicActionQuery currentAction = (AtomicActionQuery)atomicAction;
-
-
-
-		// }
-
-		if(atomicAction.getSecondAction() != null){
-			executeAtomicAction(atomicAction.getSecondAction());
-		}
-
+		return adaptation;
+			
 	}
 
 	private rcl_interfaces.msg.ParameterValue convertParameterValue(ros.ParameterValue paramValue){
@@ -595,58 +481,12 @@ private static void printIndent(int indent) {
 		// return value;
 	}
 
-	private void selectFeature(Feature variant){
-		try {
-		// java.lang.System.out.println("Select Feature: " + variant.getName());
-
-		// // Loop through variant.getReconfigurations()
-		// aal_msgs.srv.AdaptArchitecture_Request request = new aal_msgs.srv.AdaptArchitecture_Request();
-		// List<aal_msgs.msg.Adaptation> adaptations = new ArrayList<>();
-		// for(Reconfiguration reconfig : variant.getReconfigurations()){
-		// 	SetParam setparam = reconfig.getSet_param();
-
-		// 	rcl_interfaces.msg.Parameter param = new rcl_interfaces.msg.Parameter();
-		// 	param.setName(setparam.getParam().getName());
-
-		// 	aal_msgs.msg.Adaptation adaptation = new aal_msgs.msg.Adaptation();
-		// 	adaptation.setAdaptationTarget((byte)1);
-
-		// 	param.setValue(convertParameterValue(setparam.getValue()));
-		// 	adaptation.setParameterAdaptation(param);
-		// 	adaptation.setNodeName(setparam.getNode().getName());
-
-		// 	adaptations.add(adaptation);
-		// }
-
-		// request.setAdaptations(adaptations);
-
-
-		// if (this.aal_client.waitForService()) {
-		// 	java.lang.System.out.println("Service is available");
-		// 	Future<aal_msgs.srv.AdaptArchitecture_Response> future = this.aal_client.asyncSendRequest(request);
-		// 	java.lang.System.out.println("Result: " + future.get().getSuccess());
-		// } else {
-		// 	java.lang.System.out.println("Service is not available");
-		// }
-		// 	} else {
-		// 		java.lang.System.out.println("Adaptation is null");
-		// 	}
-		// }
-		}
-		catch (Exception e) {
-			java.lang.System.out.println("Error in selectFeature");
-			e.printStackTrace();
-		}
-	}
+	
 
   public void handleService(final RMWRequestId header,
       final aal_msgs.srv.AdaptArchitectureTactical_Request request,
       final aal_msgs.srv.AdaptArchitectureTactical_Response response) {
 	loadAllModels();
-    
-	for( AdaptationRule rule : tacticsModel.getAdaptationRules() ){
-		evaluateAndExecuteAdaptationRule(rule);
-	}
   }
 
   public void parseComputationGraph()
@@ -718,6 +558,60 @@ private static void printIndent(int indent) {
 
   }
 
+  
+  private Object unpackParameterValue(rcl_interfaces.msg.ParameterValue paramValue) {
+		if (paramValue.getType() == rcl_interfaces.msg.ParameterType.PARAMETER_DOUBLE_ARRAY) {
+			return paramValue.getDoubleArrayValue();
+		} else if (paramValue.getType() == rcl_interfaces.msg.ParameterType.PARAMETER_STRING_ARRAY) {
+			return paramValue.getStringArrayValue();
+		} else if (paramValue.getType() == rcl_interfaces.msg.ParameterType.PARAMETER_BOOL_ARRAY) {
+			return paramValue.getBoolArrayValue();
+		} else if (paramValue.getType() == rcl_interfaces.msg.ParameterType.PARAMETER_BYTE_ARRAY) {
+			return paramValue.getByteArrayValue();
+		} else if (paramValue.getType() == rcl_interfaces.msg.ParameterType.PARAMETER_INTEGER_ARRAY) {
+			return paramValue.getIntegerArrayValue();
+		} else if (paramValue.getType() == rcl_interfaces.msg.ParameterType.PARAMETER_DOUBLE) {
+			return paramValue.getDoubleValue();
+		} else if (paramValue.getType() == rcl_interfaces.msg.ParameterType.PARAMETER_STRING) {
+			return paramValue.getStringValue();
+		} else if (paramValue.getType() == rcl_interfaces.msg.ParameterType.PARAMETER_BOOL) {
+			return paramValue.getBoolValue();
+		} else if (paramValue.getType() == rcl_interfaces.msg.ParameterType.PARAMETER_INTEGER) {
+			return paramValue.getIntegerValue();
+		} else {
+			throw new IllegalArgumentException("Unsupported parameter type: " + paramValue.getType());
+		}
+	}			
+
+  private void processTactics()
+  {
+	int period = tacticsModel.getPeriod();
+
+ 	tacticsTimer = getNode().createWallTimer(
+        period, TimeUnit.MILLISECONDS,
+        () -> {
+
+			for(String measurement : generator.uniqueMeasurements)
+			{
+				rcl_interfaces.msg.ParameterValue context_value = requestContextVar(measurement);
+				String insert_query = generator.generateInsertMeasurement(measurement, unpackParameterValue(context_value));
+
+				requestTypedbQuery(insert_query, "insert");
+			}
+
+			List<ros_typedb_msgs.msg.ResultTree> results = requestTypedbQuery(generator.generateFetchQuery(tacticsModel), "fetch");
+			if(results.isEmpty()) {
+				java.lang.System.out.println("No Tactics valid");
+				return;
+			}
+
+            aal_msgs.msg.Adaptation adap = processSetParameter(results);
+            requestAdaptation(new ArrayList<>(Arrays.asList(adap)));
+        }
+    );
+
+  }
+
   public AdaptationEngine(ArrayList<String> cli_args) throws Exception {
     super("adaptation_engine",cli_args);
 	registerEPackages();
@@ -757,52 +651,13 @@ private static void printIndent(int indent) {
 	}else{
 		java.lang.System.out.println("Not loading models on start");
 	}
-	TacticsGenerator generator = new TacticsGenerator();
+	generator = new TacticsGenerator();
 	String x = generator.generateTQL(tacticsModel);
 
 	// java.lang.System.out.println("Generated TQL: \n" + x);
-
-
 	requestTypedbQuery(x, "insert");
 
-	requestTypedbQuery(
-	"""
-	match
-    $t_measured_nearest_object isa Term, has term_name "t_measured_nearest_object";
-
-insert
-    $t_measured_nearest_object has term_value 0.09;
-    """
-	, "insert");
-
-
-	String valid_rule = """
-	match
-    $r (consequent: $c) isa tactic_rule, has rule_valid true;
-fetch
-    $r: rule_name;
-    $c: attribute;
-    """;
-
-	String fetch_action = """
-match
-    $r (tactic:$t, consequent:$c) isa tactic_rule, has rule_valid true;
-    $c has term_name $consequent_name;
-    (tactic:$t, variant_resolution:$vr) isa resolution_model;
-    $vr (resolution_action:$res_action) isa variant_resolution, has variant_name $variant_name;
-    $variant_name == $consequent_name;
-fetch
-    set_parameter_action:{
-        match
-            $res_action isa! SetParameter;
-        fetch
-            $res_action: node_name, parameter_name, parameter-type, parameter-value;
-    };
-""";
-
-	requestTypedbQuery(fetch_action, "fetch");
-
-
+	processTactics();
 
     java.lang.System.out.println("Got here!");
 
