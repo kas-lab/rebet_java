@@ -35,7 +35,7 @@ dependencies {
     implementation files('libs/eu.coresense.resolution_1.0.0.jar')
     implementation files('libs/eu.coresense.variability_1.0.0.jar')
     implementation files('libs/fms.metamodel_1.0.0.jar')
-    implementation files('libs/de.fraunhofer.ipa.ros.xtext_3.0.1.jar')
+    implementation files('libs/de.fraunhofer.ipa.ros.xtext_3.0.2.jar')
     implementation files('libs/de.fraunhofer.ipa.ros_3.0.0.jar')
     implementation files('libs/de.fraunhofer.ipa.rossystem_3.0.0.jar')
     implementation files('libs/de.fraunhofer.ipa.rossystem.xtext_3.0.0.jar')

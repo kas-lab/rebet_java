@@ -69,6 +69,7 @@ import de.fraunhofer.ipa.rossystem.RosSystemStandaloneSetupGenerated;
 import de.fraunhofer.ipa.ros2.Ros2StandaloneSetupGenerated;
 import de.fraunhofer.ipa.ros.RosStandaloneSetupGenerated;
 import ros.Package;
+import ros.AmentPackage;
 import ros.RosPackage;
 import ros.RosFactory;
 import uma.caosd.rhea.BasicFMmetamodel.Feature;
@@ -136,7 +137,12 @@ public class AdaptationEngine extends BetterComposableNode {
 
   private TacticsModel tacticsModel;
 
+  private boolean flag = true;
+
   private TacticsGenerator generator;
+
+  List<Resource> ros2Resources;
+  List<Resource> rosSystemResources;
 
 
 public void printVisibleReferences(
@@ -243,7 +249,7 @@ private static void printIndent(int indent) {
         m.put(fileExtension, injector.getInstance(XtextResourceFactory.class));
 
         for (String filePath : filePaths) {
-            Resource resource = resSet.createResource(URI.createURI(filePath));
+            Resource resource = resSet.createResource(URI.createFileURI(filePath));
 			validate(resource);
             resource.load(null);
 			resources.add(resource);
@@ -273,16 +279,16 @@ private static void printIndent(int indent) {
         getNode().getParameter("ros_path").asStringArray()
     );
 
-	loadModel(
+	ros2Resources = loadModel(
         new Ros2StandaloneSetupGenerated(),
         "ros2",
         getNode().getParameter("ros2_path").asStringArray()
     );
 
-	loadModel(
+	rosSystemResources = loadModel(
         new RosSystemStandaloneSetupGenerated(),
         "rossystem",
-        getNode().getParameter("rossystem_path").asString()
+        getNode().getParameter("rossystem_path").asStringArray()
     );
 
 		loadModel(
@@ -313,13 +319,16 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 	try {
 	rebet_msgs.srv.GetContextVar_Request request = new rebet_msgs.srv.GetContextVar_Request();
 	request.setVariableName(variable_name);
+	java.lang.System.out.println("Getting context var " + variable_name);
+
+
 
 	if(this.context_client.waitForService()){
 		java.lang.System.out.println("Service is available");
 		Future<rebet_msgs.srv.GetContextVar_Response> future = this.context_client.asyncSendRequest(request);
 		
 		rcl_interfaces.msg.ParameterValue res = future.get().getVariableValue();
-		java.lang.System.out.println("Result: " + res.getDoubleValue());
+		java.lang.System.out.println("Context Var Result: " + res.getDoubleValue());
 
 		return res;
 	}
@@ -344,7 +353,7 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 			if (this.aal_client.waitForService()) {
 				java.lang.System.out.println("Service is available");
 				Future<aal_msgs.srv.AdaptArchitecture_Response> future = this.aal_client.asyncSendRequest(request);
-				java.lang.System.out.println("Result: " + future.get().getSuccess());
+				java.lang.System.out.println("Adaptation Result: " + future.get().getSuccess());
 				return future.get().getSuccess();
 			} else {
 				java.lang.System.out.println("Service is not available");
@@ -358,7 +367,7 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 	}
 	
 
-	private List<ros_typedb_msgs.msg.ResultTree> requestTypedbQuery(String query, String queryType) {
+	private List<ros_typedb_msgs.msg.ResultTree> requestTypedbQuery(String query, byte queryType) {
 		try {
 			ros_typedb_msgs.srv.Query_Request request = new ros_typedb_msgs.srv.Query_Request();
 			request.setQuery(query);
@@ -481,12 +490,163 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 		// return value;
 	}
 
-	
+	private <T> List<ros.Node> nodesWith(Function<ros.Node, List<T>> getList, Function<T, String> getName, String targetName) {
+		List<ros.Node> nodes = new ArrayList<>();
+		for (Resource resource : rosSystemResources) {
+			System sys = (System) resource.getContents().get(0);
+			for (system.Component component : sys.getComponents()) {
+				if (!(component instanceof system.RosNode)) {
+					continue;
+				}
+				system.RosNode ros_node = (system.RosNode) component;
 
+				ros.Node node = ros_node.getFrom();
+				for (T item : getList.apply(node)) {
+					if (getName.apply(item).equals(targetName)) {
+						nodes.add(node);
+					}
+				}
+			}
+		}
+		return nodes;
+	}
+
+	public List<ros.Node> nodesWithActionClient(String actionName) {
+		return nodesWith(ros.Node::getActionclient, ros.ActionClient::getName, actionName);
+	}
+
+	public List<ros.Node> nodesWithActionServer(String actionName) {
+		return nodesWith(ros.Node::getActionserver, ros.ActionServer::getName, actionName);
+	}
+
+	public List<ros.Node> nodesWithServiceClient(String serviceName) {
+		return nodesWith(ros.Node::getServiceclient, ros.ServiceClient::getName, serviceName);
+	}
+
+	public List<ros.Node> nodesWithServiceServer(String serviceName) {
+		return nodesWith(ros.Node::getServiceserver, ros.ServiceServer::getName, serviceName);
+	}
+
+	public List<ros.Node> nodesWithPublisher(String topicName) {
+		return nodesWith(ros.Node::getPublisher, ros.Publisher::getName, topicName);
+	}
+
+	public List<ros.Node> nodesWithSubscriber(String topicName) {
+		return nodesWith(ros.Node::getSubscriber, ros.Subscriber::getName, topicName);
+	}
+
+	public Set<ros.Node> allConnectedNodes(ros.Node node) {
+		Set<ros.Node> connectedNodes = new HashSet<>();
+
+		connectedNodes.addAll(processExpansion(node));
+
+		for (ros.ActionServer actionServer : node.getActionserver()) {
+			connectedNodes.addAll(nodesWithActionClient(actionServer.getName()));	  
+		}
+
+		for (ros.ActionClient actionClient : node.getActionclient()) {
+			connectedNodes.addAll(nodesWithActionServer(actionClient.getName()));
+		}
+
+		// Collect all nodes from subscribers
+		for (ros.Subscriber subscriber : node.getSubscriber()) {
+			connectedNodes.addAll(nodesWithPublisher(subscriber.getName()));
+		}
+
+		// Collect all nodes from publishers
+		for (ros.Publisher publisher : node.getPublisher()) {
+			connectedNodes.addAll(nodesWithSubscriber(publisher.getName()));
+		}
+
+		for (ros.ServiceServer serviceServer : node.getServiceserver()) {
+			connectedNodes.addAll(nodesWithServiceClient(serviceServer.getName()));	  
+		}
+
+		for (ros.ServiceClient serviceClient : node.getServiceclient()) {
+			connectedNodes.addAll(nodesWithServiceServer(serviceClient.getName()));	  
+		}
+
+		return connectedNodes;
+  	}
   public void handleService(final RMWRequestId header,
       final aal_msgs.srv.AdaptArchitectureTactical_Request request,
       final aal_msgs.srv.AdaptArchitectureTactical_Response response) {
-	loadAllModels();
+	// loadAllModels();
+		aal_msgs.msg.ActionNodeDescription action_des = request.getChildDescription();
+
+		String key = action_des.getActionName();
+		
+		ros.Node dat_node = null;
+		for (Resource resource : rosSystemResources) {
+			System sys = (System) resource.getContents().get(0);
+			java.lang.System.out.println("Name of the system: " + sys.getName());
+			for (system.Component component : sys.getComponents()) {
+				if (!(component instanceof system.RosNode)) {
+					continue;
+				}
+				system.RosNode ros_node = (system.RosNode) component;
+				ros.Node node = ros_node.getFrom();
+				for (ros.ActionServer action_server : node.getActionserver())
+				{
+					// ros.ActionSpec a_spec = action_server.getAction();
+					String looking_for = action_server.getName();
+					// java.lang.System.out.println("Looking for action server: " + looking_for);
+
+					if(looking_for.equals(key))
+					{
+						java.lang.System.out.println("!! Found action server: " + looking_for);
+
+						dat_node = node;
+
+					}
+				}
+			}
+		// java.lang.System.out.println(pkg.getArtifact());
+	}
+	if (dat_node == null) {
+		java.lang.System.out.println("No node found for action server: " + key);
+		response.setSuccess(false);
+		return;
+	}
+
+	java.lang.System.out.println("------");
+
+	// Search for all connected nodes
+	HashSet<ros.Node> node_set = new HashSet<>();
+	node_set.add(dat_node);
+	search(dat_node, node_set);
+	java.lang.System.out.println("Total connected nodes: " + node_set.size());
+	for(ros.Node connected_node : node_set) {
+		java.lang.System.out.println("Connected node: " + connected_node.getName());
+	}
+
+
+  }
+
+  public List<ros.Node> processExpansion(ros.Node node) {
+	List<ros.Node> rosNodes = new ArrayList<>();
+	for (Resource resource : rosSystemResources) {
+		System sys = (System) resource.getContents().get(0);
+		for(system.Process process : sys.getProcesses()) {
+			for(system.Component component : process.getComponents()) {
+				if (!(component instanceof system.RosNode)) {
+					continue;
+				}
+				system.RosNode ros_node = (system.RosNode) component;
+				rosNodes.add(ros_node.getFrom());
+			}		
+		}
+	}
+	return rosNodes;
+  }
+
+  public void search(ros.Node node, HashSet<ros.Node> node_set) {
+	for(ros.Node connected_node : allConnectedNodes(node)) {
+		if(node_set.add(connected_node))
+		{
+			search(connected_node, node_set);
+		}
+	}
   }
 
   public void parseComputationGraph()
@@ -590,19 +750,32 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
  	tacticsTimer = getNode().createWallTimer(
         period, TimeUnit.MILLISECONDS,
         () -> {
-
-			for(String measurement : generator.uniqueMeasurements)
+			
+			if(flag)
 			{
-				rcl_interfaces.msg.ParameterValue context_value = requestContextVar(measurement);
-				String insert_query = generator.generateInsertMeasurement(measurement, unpackParameterValue(context_value));
+				for(String measurement : generator.uniqueMeasurements)
+				{
+					rcl_interfaces.msg.ParameterValue context_value = requestContextVar(measurement);
+					String insert_query = generator.generateInsertMeasurement(measurement, unpackParameterValue(context_value));
 
-				requestTypedbQuery(insert_query, "insert");
+					requestTypedbQuery(insert_query, ros_typedb_msgs.srv.Query_Request.INSERT);
+				}
+			flag = false;
 			}
-
-			List<ros_typedb_msgs.msg.ResultTree> results = requestTypedbQuery(generator.generateFetchQuery(tacticsModel), "fetch");
+			String fetch_q = generator.generateFetchQuery(tacticsModel);
+			List<ros_typedb_msgs.msg.ResultTree> results = requestTypedbQuery(fetch_q, ros_typedb_msgs.srv.Query_Request.FETCH);
 			if(results.isEmpty()) {
 				java.lang.System.out.println("No Tactics valid");
 				return;
+			}
+			// Print the length
+			java.lang.System.out.println("Number of results: " + results.size());
+			for (ros_typedb_msgs.msg.ResultTree result_tree : results) {
+				for (ros_typedb_msgs.msg.QueryResult q_result : result_tree.getResults()) {
+					java.lang.System.out.println(RosTypeDBInterface.printQueryResult(q_result));
+					
+				}
+				java.lang.System.out.println("something unique");
 			}
 
             aal_msgs.msg.Adaptation adap = processSetParameter(results);
@@ -616,7 +789,7 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
     super("adaptation_engine",cli_args);
 	registerEPackages();
 
-	parseComputationGraph();
+	// parseComputationGraph();
 
 	
 
@@ -624,11 +797,12 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
     this.count = 0;
 	getNode().declareParameter(new ParameterVariant("tactics_path", ""));
 	getNode().declareParameter(new ParameterVariant("resolution_path", ""));
-	getNode().declareParameter(new ParameterVariant("rossystem_path", ""));
 	getNode().declareParameter(new ParameterVariant("variability_path", ""));
 	String[] paths = {"", ""};
 	getNode().declareParameter(new ParameterVariant("ros_path", paths));
-	getNode().declareParameter(new ParameterVariant("ros2_path", ""));
+	getNode().declareParameter(new ParameterVariant("ros2_path", paths));
+	getNode().declareParameter(new ParameterVariant("rossystem_path", paths));
+
 	getNode().declareParameter(new ParameterVariant("loadmodelsonstart", true));
 
 	java.lang.System.out.println("Got here!");
@@ -651,11 +825,67 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 	}else{
 		java.lang.System.out.println("Not loading models on start");
 	}
-	generator = new TacticsGenerator();
-	String x = generator.generateTQL(tacticsModel);
 
-	// java.lang.System.out.println("Generated TQL: \n" + x);
-	requestTypedbQuery(x, "insert");
+	boolean skipping = true;
+
+
+	Collection<NodeNameInfo> node_names = getNode().getNodeNames();
+
+
+
+
+	List<String> nodeBlackList = Arrays.asList("transform_listener", "_ros2cli_daemon", "ros_gz_bridge", "robot_state_publisher", "adaptation_engine", "rviz", "tree_action_client", "arborist");
+
+	Set<String> graphNodeNames = new HashSet<>();
+	for (NodeNameInfo node_name_info : node_names) {
+		//If blacklist entry is substring of node name, skip it
+		if (nodeBlackList.stream().anyMatch(node_name_info.name::contains)) {
+			continue;
+		}
+		
+		graphNodeNames.add(node_name_info.name);
+		java.lang.System.out.println("Node name: " + node_name_info.name);
+	}
+
+	java.lang.System.out.println("--------------------");
+	java.lang.System.out.println("--------------------");
+
+	Set<String> knownNodeNames = new HashSet<>();
+
+	for (Resource resource : ros2Resources) {
+		AmentPackage pkg = (AmentPackage) resource.getContents().get(0);
+		for (ros.Artifact artifact : pkg.getArtifact()) {
+			if (artifact.getNode() != null) {
+				ros.Node node = artifact.getNode();
+				knownNodeNames.add(node.getName());
+				java.lang.System.out.println("Node name: " + node.getName());
+			}
+		}
+	}
+
+	// Check if all graph nodes are known
+	boolean allKnown = knownNodeNames.containsAll(graphNodeNames);
+
+	java.lang.System.out.println("Are all graph nodes are known? " + allKnown);
+
+	if (!allKnown) {
+		java.lang.System.out.println("Some nodes in the computation graph are not known in the ROS2 model.");
+		for (String nodeName : graphNodeNames) {
+			if (!knownNodeNames.contains(nodeName)) {
+				java.lang.System.out.println("Unknown node: " + nodeName);
+			}
+		}
+	} else {
+		java.lang.System.out.println("All nodes in the computation graph are known in the ROS2 model.");
+	}
+
+
+	
+	if(!skipping) {
+	generator = new TacticsGenerator();
+	String x = generator.generateTQL(tacticsModel); // one specific instance of a .tactics file
+
+	requestTypedbQuery(x, ros_typedb_msgs.srv.Query_Request.INSERT);
 
 	processTactics();
 
@@ -668,6 +898,7 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
     resSet,
     RosPackage.Literals.ARTIFACT__NODE // or whatever reference you want to check
 	);
+  	}
     // java.lang.System.out.println("Number of tactics: " + tacticsModel.getAdaptationRules().size());
   }
 
