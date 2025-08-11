@@ -19,7 +19,7 @@ import java.util.HashSet;
 import org.ros2.rcljava.RCLJava;
 import org.ros2.rcljava.concurrent.Callback;
 import org.ros2.rcljava.node.BetterComposableNode;
-import org.ros2.rcljava.publisher.Publisher;
+import org.ros2.rcljava.subscription.Subscription;
 import org.ros2.rcljava.client.Client;
 import org.ros2.rcljava.service.Service;
 import org.ros2.rcljava.timer.WallTimer;
@@ -29,6 +29,7 @@ import org.ros2.rcljava.parameters.*;
 import org.ros2.rcljava.graph.NodeNameInfo;
 
 import rcl_interfaces.msg.ParameterValue;
+import rcl_interfaces.msg.ParameterEvent;
 
 import eu.coresense.adaptation.tactics.AdaptationRule;
 import eu.coresense.adaptation.tactics.TacticsPackage;
@@ -110,6 +111,8 @@ import org.eclipse.xtext.resource.IEObjectDescription;
 import com.google.common.base.Predicate;
 
 import org.ros2.rcljava.rebet_java.RosTypeDBInterface;
+import org.ros2.rcljava.rebet_java.RosToolingSupport;
+
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -118,15 +121,15 @@ import java.util.concurrent.TimeUnit;
 public class AdaptationEngine extends BetterComposableNode {
   private int count;
 
-  private Publisher<std_msgs.msg.String> publisher;
+  private Subscription<ParameterEvent> parameterEventSubscriber;
 
-  private Client<rebet_msgs.srv.GetContextVar> context_client;
+  private Client<rebet_msgs.srv.GetContextVar> contextClient;
 
-  private Client<ros_typedb_msgs.srv.Query> typedb_client;
+  private Client<ros_typedb_msgs.srv.Query> typeDBClient;
 
-  private Client<aal_msgs.srv.AdaptArchitecture> aal_client;
+  private Client<aal_msgs.srv.AdaptArchitecture> aalClient;
 
-  private Service<aal_msgs.srv.AdaptArchitectureTactical> adaptation_service;
+  private Service<aal_msgs.srv.AdaptArchitectureTactical> adaptationService;
 
   private WallTimer tacticsTimer;
 
@@ -138,6 +141,8 @@ public class AdaptationEngine extends BetterComposableNode {
   private TacticsModel tacticsModel;
 
   private boolean flag = true;
+
+  private boolean modelsLoaded = false;
 
   private TacticsGenerator generator;
 
@@ -313,6 +318,8 @@ private static void printIndent(int indent) {
 
 	Resource tacticsModelResource = tacticsResources.get(0);
 	tacticsModel = (TacticsModel) tacticsModelResource.getContents().get(0);
+
+	modelsLoaded = true;
  }
 
 private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name){
@@ -323,9 +330,9 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 
 
 
-	if(this.context_client.waitForService()){
+	if(this.contextClient.waitForService()){
 		java.lang.System.out.println("Service is available");
-		Future<rebet_msgs.srv.GetContextVar_Response> future = this.context_client.asyncSendRequest(request);
+		Future<rebet_msgs.srv.GetContextVar_Response> future = this.contextClient.asyncSendRequest(request);
 		
 		rcl_interfaces.msg.ParameterValue res = future.get().getVariableValue();
 		java.lang.System.out.println("Context Var Result: " + res.getDoubleValue());
@@ -350,9 +357,9 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 			request.setAdaptations(adaptations);
 
 
-			if (this.aal_client.waitForService()) {
+			if (this.aalClient.waitForService()) {
 				java.lang.System.out.println("Service is available");
-				Future<aal_msgs.srv.AdaptArchitecture_Response> future = this.aal_client.asyncSendRequest(request);
+				Future<aal_msgs.srv.AdaptArchitecture_Response> future = this.aalClient.asyncSendRequest(request);
 				java.lang.System.out.println("Adaptation Result: " + future.get().getSuccess());
 				return future.get().getSuccess();
 			} else {
@@ -372,9 +379,9 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 			ros_typedb_msgs.srv.Query_Request request = new ros_typedb_msgs.srv.Query_Request();
 			request.setQuery(query);
 			request.setQueryType(queryType);
-			if (this.typedb_client.waitForService()) {
+			if (this.typeDBClient.waitForService()) {
 				java.lang.System.out.println("TYPEDB Service is available");
-				Future<ros_typedb_msgs.srv.Query_Response> future = this.typedb_client.asyncSendRequest(request);
+				Future<ros_typedb_msgs.srv.Query_Response> future = this.typeDBClient.asyncSendRequest(request);
 				ros_typedb_msgs.srv.Query_Response response = future.get();
 
 				if( response.getSuccess() == false) {
@@ -741,8 +748,8 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 		} else {
 			throw new IllegalArgumentException("Unsupported parameter type: " + paramValue.getType());
 		}
-	}			
-
+	}
+	
   private void processTactics()
   {
 	int period = tacticsModel.getPeriod();
@@ -785,6 +792,87 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 
   }
 
+  private void parameterEventCallback(final rcl_interfaces.msg.ParameterEvent eventMsg) {
+	String nodeAffected = eventMsg.getNode();
+	java.lang.System.out.println("Parameter event received for node: " + nodeAffected);
+
+	if(!modelsLoaded) { return; }
+
+	RosNode rosNode = RosToolingSupport.nodeInRosSystems(nodeAffected, rosSystemResources);
+	if(rosNode == null) {
+		java.lang.System.out.println("ParamEvent affected node " + nodeAffected + " not found in ROS2 model.");
+		return;
+	}
+	ros.Node fromNode = rosNode.getFrom();
+
+	for (rcl_interfaces.msg.Parameter parameter : eventMsg.getNewParameters())
+	{
+		ros.Parameter matchRosParam = RosToolingSupport.findParameter(fromNode, parameter.getName());
+		system.RosParameter matchRossystemParam = RosToolingSupport.findRosParameter(rosNode, parameter.getName());
+
+		boolean existsInRos = matchRosParam != null;
+		boolean existsInRossystem = matchRossystemParam != null;
+
+		if(!existsInRos && existsInRossystem)
+		{
+			throw new IllegalStateException("Very strange, a parameter was found in the rossystem but not in the ros files which should not be possible");
+		}
+
+
+		if(existsInRos && existsInRossystem)
+		{
+			//Check if the value is same as what is in .rossystem, if not, update rossystem. This should reuse code from getChangedParameters below
+			RosToolingSupport.updateRosParameter(matchRossystemParam, parameter);
+		}
+		else if(existsInRos && !existsInRossystem)
+		{
+			// Is the value different than what is in .ros2 files? If so add to the rossystem.
+			RosToolingSupport.newRosParameter(rosNode, matchRosParam, parameter);
+		}
+		else if(!existsInRos && !existsInRossystem)
+		{
+			// It should be added to the .ros
+			RosToolingSupport.newParameter(fromNode, parameter);
+			//TODO: Handle the fact that this should update the original ros2 files, either with an overwrite or a new file.
+		}
+	}
+
+	for (rcl_interfaces.msg.Parameter parameter : eventMsg.getChangedParameters())
+	{
+		ros.Parameter matchRosParam = RosToolingSupport.findParameter(fromNode, parameter.getName());
+		system.RosParameter matchRossystemParam = RosToolingSupport.findRosParameter(rosNode, parameter.getName());
+
+		boolean existsInRos = matchRosParam != null;
+		boolean existsInRossystem = matchRossystemParam != null;
+
+		if(!existsInRos && existsInRossystem)
+		{
+			throw new IllegalStateException("Very strange, a parameter was found in the rossystem but not in the ros files which should not be possible");
+		}
+
+		if(existsInRossystem)
+		{
+			// It already has an override, so just update that.
+			RosToolingSupport.updateRosParameter(matchRossystemParam, parameter);
+		}
+		else if(existsInRos)
+		{
+			//Not in the rossystem, so we add it there.
+			RosToolingSupport.newRosParameter(rosNode, matchRosParam, parameter);
+		}
+		else
+		{
+			RosToolingSupport.newParameter(fromNode, parameter);
+		}
+	}
+
+	for (rcl_interfaces.msg.Parameter parameter : eventMsg.getDeletedParameters())
+	{
+		//TODO: Implementing this properly requires having a notion of an 'active' set of parameters. This is not currently implemented.
+		// It will be done on start through a manual query to each node in the rosSystem I suppose.
+	}
+  }
+
   public AdaptationEngine(ArrayList<String> cli_args) throws Exception {
     super("adaptation_engine",cli_args);
 	registerEPackages();
@@ -807,11 +895,12 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 
 	java.lang.System.out.println("Got here!");
     
-	this.context_client = node.<rebet_msgs.srv.GetContextVar>createClient(rebet_msgs.srv.GetContextVar.class, "/get_context_var");
-	this.aal_client = node.<aal_msgs.srv.AdaptArchitecture>createClient(aal_msgs.srv.AdaptArchitecture.class, "/adapt_architecture");
-	this.typedb_client = node.<ros_typedb_msgs.srv.Query>createClient(ros_typedb_msgs.srv.Query.class, "/ros_typedb/query");
+	this.contextClient = node.<rebet_msgs.srv.GetContextVar>createClient(rebet_msgs.srv.GetContextVar.class, "/get_context_var");
+	this.aalClient = node.<aal_msgs.srv.AdaptArchitecture>createClient(aal_msgs.srv.AdaptArchitecture.class, "/adapt_architecture");
+	this.typeDBClient = node.<ros_typedb_msgs.srv.Query>createClient(ros_typedb_msgs.srv.Query.class, "/ros_typedb/query");
+	this.parameterEventSubscriber = node.<ParameterEvent>createSubscription(ParameterEvent.class, "/parameter_events", (ParameterEvent event) -> this.parameterEventCallback(event));
 
-	this.adaptation_service =  node.<aal_msgs.srv.AdaptArchitectureTactical>createService(
+	this.adaptationService =  node.<aal_msgs.srv.AdaptArchitectureTactical>createService(
             aal_msgs.srv.AdaptArchitectureTactical.class, "/adapt_architecture_tactical",
             (RMWRequestId header, aal_msgs.srv.AdaptArchitectureTactical_Request request,
                 aal_msgs.srv.AdaptArchitectureTactical_Response response)
