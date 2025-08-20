@@ -12,6 +12,7 @@ import java.util.concurrent.Future;
 import java.util.Map;
 import java.util.function.Function;
 import java.io.File;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Set;
 import java.util.HashSet;
@@ -148,6 +149,7 @@ public class AdaptationEngine extends BetterComposableNode {
 
   List<Resource> ros2Resources;
   List<Resource> rosSystemResources;
+  
 
 
 public void printVisibleReferences(
@@ -499,6 +501,21 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 
 	private <T> List<ros.Node> nodesWith(Function<ros.Node, List<T>> getList, Function<T, String> getName, String targetName) {
 		List<ros.Node> nodes = new ArrayList<>();
+		for (system.RosNode ros_node : allRossystemNodes()) {
+			ros.Node node = ros_node.getFrom();
+			for (T item : getList.apply(node)) {
+				if (getName.apply(item).equals(targetName)) {
+					nodes.add(node);
+				}
+			}		
+		}
+		return nodes;
+	}
+
+	private List<system.RosNode> allRossystemNodes()
+	{
+		List<system.RosNode> rosNodesInRossystems = new ArrayList<>();
+
 		for (Resource resource : rosSystemResources) {
 			System sys = (System) resource.getContents().get(0);
 			for (system.Component component : sys.getComponents()) {
@@ -506,16 +523,11 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 					continue;
 				}
 				system.RosNode ros_node = (system.RosNode) component;
-
-				ros.Node node = ros_node.getFrom();
-				for (T item : getList.apply(node)) {
-					if (getName.apply(item).equals(targetName)) {
-						nodes.add(node);
-					}
-				}
+				rosNodesInRossystems.add(ros_node);
 			}
 		}
-		return nodes;
+
+		return rosNodesInRossystems;
 	}
 
 	public List<ros.Node> nodesWithActionClient(String actionName) {
@@ -892,6 +904,8 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 	getNode().declareParameter(new ParameterVariant("rossystem_path", paths));
 
 	getNode().declareParameter(new ParameterVariant("loadmodelsonstart", true));
+	getNode().declareParameter(new ParameterVariant("checkinitialparameters", true));
+
 
 	java.lang.System.out.println("Got here!");
     
@@ -918,56 +932,125 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 	boolean skipping = true;
 
 
-	Collection<NodeNameInfo> node_names = getNode().getNodeNames();
+	
 
 
-
-
-	List<String> nodeBlackList = Arrays.asList("transform_listener", "_ros2cli_daemon", "ros_gz_bridge", "robot_state_publisher", "adaptation_engine", "rviz", "tree_action_client", "arborist");
-
-	Set<String> graphNodeNames = new HashSet<>();
-	for (NodeNameInfo node_name_info : node_names) {
-		//If blacklist entry is substring of node name, skip it
-		if (nodeBlackList.stream().anyMatch(node_name_info.name::contains)) {
-			continue;
+	if (modelsLoaded)
+	{
+		List<system.RosNode> rosNodesInRossystems = allRossystemNodes();
+		Set<String> knownNodeNames = new HashSet<>();
+		for (system.RosNode rosNode : rosNodesInRossystems) {
+			knownNodeNames.add(rosNode.getName());
 		}
 		
-		graphNodeNames.add(node_name_info.name);
-		java.lang.System.out.println("Node name: " + node_name_info.name);
-	}
+		
+		
+		Set<String> graphNodeNames = new HashSet<>();
+		Collection<NodeNameInfo> node_names = getNode().getNodeNames();
 
-	java.lang.System.out.println("--------------------");
-	java.lang.System.out.println("--------------------");
-
-	Set<String> knownNodeNames = new HashSet<>();
-
-	for (Resource resource : ros2Resources) {
-		AmentPackage pkg = (AmentPackage) resource.getContents().get(0);
-		for (ros.Artifact artifact : pkg.getArtifact()) {
-			if (artifact.getNode() != null) {
-				ros.Node node = artifact.getNode();
-				knownNodeNames.add(node.getName());
-				java.lang.System.out.println("Node name: " + node.getName());
-			}
+		for (NodeNameInfo node_name_info : node_names) {
+			graphNodeNames.add(node_name_info.name);
 		}
-	}
 
-	// Check if all graph nodes are known
-	boolean allKnown = knownNodeNames.containsAll(graphNodeNames);
+		java.lang.System.out.println("--------------------");
+		java.lang.System.out.println("--------------------");
 
-	java.lang.System.out.println("Are all graph nodes are known? " + allKnown);
+		// Check if all rossystem nodes are present in the computation graph
+		boolean allKnown = graphNodeNames.containsAll(knownNodeNames);
 
-	if (!allKnown) {
-		java.lang.System.out.println("Some nodes in the computation graph are not known in the ROS2 model.");
+		java.lang.System.out.println("Are all rossystem nodes are present? " + allKnown);
+
 		for (String nodeName : graphNodeNames) {
-			if (!knownNodeNames.contains(nodeName)) {
-				java.lang.System.out.println("Unknown node: " + nodeName);
-			}
+			java.lang.System.out.println("Node in computation graph: " + nodeName);
 		}
-	} else {
-		java.lang.System.out.println("All nodes in the computation graph are known in the ROS2 model.");
+
+		if (!allKnown) {
+			java.lang.System.out.println("Some nodes in the computation graph are not known in the ROS2 model.");
+			for (String nodeName : knownNodeNames) {
+				if (!graphNodeNames.contains(nodeName)) {
+					java.lang.System.out.println("Node which isn't running: " + nodeName);
+				}
+			}
+		} else {
+			java.lang.System.out.println("All nodes in the rossystem files are in the computation graph.");
+
+			for (system.RosNode rosNode : rosNodesInRossystems) {
+				java.lang.System.out.println("\n---------------------\n");
+				List<String> parameterNames = rosNode.getFrom().getParameter().stream()
+					.map(ros.Parameter::getName)
+					.collect(java.util.stream.Collectors.toList());
+
+
+				String nodeName = rosNode.getName();
+
+				Client<rcl_interfaces.srv.GetParameters> client =
+					getNode().<rcl_interfaces.srv.GetParameters>createClient(
+						rcl_interfaces.srv.GetParameters.class, "/" + nodeName + "/get_parameters");
+
+				if(parameterNames.isEmpty()) {
+					continue;
+				}
+				rcl_interfaces.srv.GetParameters_Request request = new rcl_interfaces.srv.GetParameters_Request();
+				request.setNames(parameterNames);
+				java.lang.System.out.println("Requesting parameters for node: " + nodeName);
+
+				if (client.waitForService(Duration.ofSeconds(5))) {
+					Future<rcl_interfaces.srv.GetParameters_Response> future = client.asyncSendRequest(request);
+					try {
+						rcl_interfaces.srv.GetParameters_Response response = future.get();
+						if (response.getValues().isEmpty()) {
+							java.lang.System.out.println("NO parameters found for node " + nodeName + " one of the parameters requested might not exist");
+							continue;
+						}
+						for (int i = 0; i < response.getValues().size(); i++) {
+							rcl_interfaces.msg.ParameterValue value = response.getValues().get(i);
+							String param_name = parameterNames.get(i);
+							ros.ParameterValue current_value = RosToolingSupport.convertParameterValue(value);
+
+							for(ros.Parameter param : rosNode.getFrom().getParameter()) {
+								Object running_value = RosToolingSupport.valueOf(current_value);
+								Object model_value = RosToolingSupport.valueOf(param.getValue());
+								boolean equal = false;
+								if(param.getName().equals(param_name)) {
+									if(!running_value.equals(model_value))
+									{
+										if (param.getType() instanceof ros.ParameterArrayType && 
+											running_value instanceof List<?> &&
+											((List<?>) running_value).isEmpty() &&
+											(model_value == null || (model_value instanceof List<?> && ((List<?>) model_value).isEmpty()))) {
+											continue;
+										}
+										// Check if the parameter exists within rosNode.getParameters()
+										system.RosParameter rosParam = RosToolingSupport.findRosParameter(rosNode, param_name);
+										if(rosParam != null) {
+											if(RosToolingSupport.valueOf(current_value).equals(RosToolingSupport.valueOf(rosParam.getValue())))
+											{
+												continue;
+											}
+										}
+										throw new IllegalStateException("Parameter value for " + param.getName() + " in node " + nodeName + " is different than in the .ros2 file. This should not happen, please check your models.");
+									}
+								}
+							}
+						}
+					}
+					catch (Exception e) {
+						java.lang.System.out.println("Error while getting parameters for node " + nodeName);
+						e.printStackTrace();
+					}
+
+				}
+				else {
+					java.lang.System.out.println("Client for node " + nodeName + " is not available.");
+				}
+			}
+			java.lang.System.out.println("Done checking all the nodes in the rossystem files.");
+		}
+
+
 	}
 
+	
 
 	
 	if(!skipping) {

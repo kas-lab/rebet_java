@@ -22,10 +22,19 @@ public class RosToolingSupport {
 	public static system.RosParameter findRosParameter(RosNode rosNode, String parameterName) {
 		return rosNode.getRosparameters()
 		.stream()
-		.filter(parameter -> parameter.getName().equals(parameterName))
+		.filter(parameter -> parameter.getFrom().getName().equals(parameterName))
 		.findFirst()
 		.orElse(null);
 	}
+
+	public static system.RosParameter findRosParameter(ros.Parameter parameter, RosNode rosNode) {
+		return rosNode.getRosparameters()
+			.stream()
+			.filter(rosParam -> rosParam.getFrom().equals(parameter))
+			.findFirst()
+			.orElse(null);
+	}
+
 
 	public static void updateRosParameter(system.RosParameter rosParam, rcl_interfaces.msg.Parameter parameter) {
 		ros.ParameterValue p_val = RosToolingSupport.convertParameterValue(parameter.getValue());
@@ -181,4 +190,30 @@ public class RosToolingSupport {
 			throw new IllegalArgumentException("Unsupported parameter type: " + paramValue.getType());
 		}
 	}
+
+	public static Object valueOf(ros.ParameterValue param) {
+		if (param instanceof ros.ParameterBoolean) {
+			return ((ros.ParameterBoolean) param).isValue();
+		} else if (param instanceof ros.ParameterInteger) {
+			return ((ros.ParameterInteger) param).getValue();
+		} else if (param instanceof ros.ParameterDouble) {
+			return ((ros.ParameterDouble) param).getValue();
+		} else if (param instanceof ros.ParameterString) {
+			return ((ros.ParameterString) param).getValue();
+		} else if (param instanceof ros.ParameterBase64) {
+			return ((ros.ParameterBase64) param).getValue();
+		} else if (param instanceof ros.ParameterSequence) {
+			//Return list of valueOf of inside elements
+			return ((ros.ParameterSequence) param).getValue().stream()
+				.map(RosToolingSupport::valueOf)
+				.toList();
+		}
+		else if (param == null) {
+			return null;
+		}
+		throw new IllegalArgumentException("Unsupported parameter type: " + param.getClass().getName());
+	}
+
+
+
 }
