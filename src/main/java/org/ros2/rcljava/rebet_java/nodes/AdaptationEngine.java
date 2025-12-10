@@ -13,9 +13,14 @@ import java.util.Map;
 import java.util.function.Function;
 import java.io.File;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Set;
 import java.util.HashSet;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.ZoneOffset;
 
 import org.ros2.rcljava.RCLJava;
 import org.ros2.rcljava.concurrent.Callback;
@@ -39,15 +44,7 @@ import eu.coresense.adaptation.TacticsStandaloneSetupGenerated;
 import eu.coresense.adaptation.tactics.RuleBody;
 import eu.coresense.adaptation.tactics.AtomicRule;
 import eu.coresense.adaptation.tactics.RuleSet;
-import eu.coresense.adaptation.tactics.AtomicRuleWithPriority;
-import eu.coresense.adaptation.tactics.LogicalOperator;
-import eu.coresense.adaptation.tactics.MathOperator;
-import eu.coresense.adaptation.tactics.PureAction;
-import eu.coresense.adaptation.tactics.ConditionAction;
-import eu.coresense.adaptation.tactics.Condition;
 import eu.coresense.adaptation.tactics.AtomicAction;
-import eu.coresense.adaptation.tactics.AtomicActionSelectFeature;
-import eu.coresense.adaptation.tactics.AtomicActionDeselectFeature;
 import eu.coresense.adaptation.generator.TQLGenerator;
 import eu.coresense.adaptation.generator.Namer;
 
@@ -395,27 +392,27 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 			}	
 		}
 		catch (Exception e) {
-			java.lang.System.out.println("Error in selectFeature");
+			java.lang.System.out.println("Error in requestAdaptation");
 			e.printStackTrace();
 		}
 		return false;
 	}
 	
 
-	private List<ros_typedb_msgs.msg.ResultTree> requestTypedbQuery(String query, byte queryType) {
+	private List<ros_typedb_msgs.msg.ResultTree> requestTypedbQuery(String query, byte queryType, String identifier) {
 		try {
 			ros_typedb_msgs.srv.Query_Request request = new ros_typedb_msgs.srv.Query_Request();
 			request.setQuery(query);
 			request.setQueryType(queryType);
 			if (this.typeDBClient.waitForService()) {
-				java.lang.System.out.println("TYPEDB Service is available");
+				java.lang.System.out.println("TYPEDB Service is available " + identifier);
 				Future<ros_typedb_msgs.srv.Query_Response> future = this.typeDBClient.asyncSendRequest(request);
 				ros_typedb_msgs.srv.Query_Response response = future.get();
 
 				if( response.getSuccess() == false) {
 					throw new IllegalStateException("Query to TypeDB Failed");
 				}
-				
+				java.lang.System.out.println("TYPEDB Service returning response");
 				return response.getResults();
 					
 						
@@ -452,38 +449,19 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 		}
 	}
 
-	private aal_msgs.msg.Adaptation processSetParameter(List<ros_typedb_msgs.msg.ResultTree> results) {
+	private aal_msgs.msg.Adaptation processSetParameter(ros_typedb_msgs.msg.ResultTree result_tree, List<ros_typedb_msgs.msg.IndexList> indexLists) {
 		java.lang.System.out.println("Processing SetParameter results \n");
 		String node_name;
-		List<ros_typedb_msgs.msg.IndexList> index_lists = null;
-		int result_index = -1;
 
-		for (int i = 0; i < results.size(); i++) {
-			ros_typedb_msgs.msg.ResultTree result_tree = results.get(i);
-			for (ros_typedb_msgs.msg.QueryResult q_result : result_tree.getResults()) {
-				if (q_result.getType() == ros_typedb_msgs.msg.QueryResult.SUB_QUERY && q_result.getSubQueryName().equals(TQLGenerator.PARAM_VALUES_SUBQUERY_NAME)) {
-					index_lists = q_result.getChildrenIndex();
-					result_index = i;
-				}
-			}
-		}
 
-		if (index_lists == null || result_index < 0) {
-			java.lang.System.out.println("No index list found in results");
-			throw new IllegalStateException("No index list found in results");
-		}
-
-		ros_typedb_msgs.msg.ResultTree result_tree = results.get(result_index);
-
-		List<Double> parameterValues = new ArrayList<Double>(index_lists.size());
+		List<Double> parameterValues = new ArrayList<Double>(indexLists.size());
 		double b = 0.0;
 
-		parameterValues = RosTypeDBInterface.extractParameterValues(Double.class, index_lists, result_tree, TQLGenerator.INDEX_VAR);
+		parameterValues = RosTypeDBInterface.extractParameterValues(Double.class, indexLists, result_tree, TQLGenerator.INDEX_VAR);
 		node_name = RosTypeDBInterface.extractStringAttribute(result_tree,TQLGenerator.NODE_VAR,"node_name");
 
 		java.lang.System.out.println("Node name: " + node_name);
-
-		String param_name = RosTypeDBInterface.extractStringAttribute(result_tree,"parameter","parameter_name");
+		String param_name = RosTypeDBInterface.extractStringAttribute(result_tree,TQLGenerator.PARAM_VAR,"parameter_name");
 		java.lang.System.out.println("Parameter name: " + param_name);
 		aal_msgs.msg.Adaptation adaptation = new aal_msgs.msg.Adaptation();
 		adaptation.setAdaptationTarget((byte)1);
@@ -561,6 +539,11 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 
 	private List<system.RosNode> allRossystemNodes()
 	{
+		return allRossystemNodes(true);
+	}
+
+	private List<system.RosNode> allRossystemNodes(boolean skipSubnodes)
+	{
 		List<system.RosNode> rosNodesInRossystems = new ArrayList<>();
 
 		for (Resource resource : rosSystemResources) {
@@ -570,7 +553,12 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 					continue;
 				}
 				system.RosNode ros_node = (system.RosNode) component;
-				rosNodesInRossystems.add(ros_node);
+				boolean isSubnode = ros_node.getParent() != null;
+				java.lang.System.out.println("Node: " + ros_node.getName() + " isSubnode: " + isSubnode);
+				
+				if(!skipSubnodes || !isSubnode) {
+					rosNodesInRossystems.add(ros_node);
+				}
 			}
 		}
 
@@ -637,10 +625,11 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
   public void handleService(final RMWRequestId header,
       final aal_msgs.srv.AdaptArchitectureTactical_Request request,
       final aal_msgs.srv.AdaptArchitectureTactical_Response response) {
+		java.lang.System.out.println("Tactical Service called");
 	// loadAllModels();
 		aal_msgs.msg.ActionNodeDescription action_des = request.getChildDescription();
-
-		String key = action_des.getActionName();
+		List<String> requirements = request.getRequirements();
+		String key = action_des.getInterfaceName();
 		
 		boolean manualImplementation = false;
 
@@ -691,9 +680,10 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 		}
 		else
 		{
-			
+			String update_ineffect = generator.generateUpdateInEffect(requirements);
 			String fetch_q = generator.generateFetchApplicableTactics(generator.getResolutionModel(tacticsModel,tacticsModelResource).get(0), key);
-			List<ros_typedb_msgs.msg.ResultTree> results = requestTypedbQuery(fetch_q, ros_typedb_msgs.srv.Query_Request.FETCH);
+			// requestTypedbQuery(update_ineffect, ros_typedb_msgs.srv.Query_Request.UPDATE);
+			List<ros_typedb_msgs.msg.ResultTree> results = requestTypedbQuery(fetch_q, ros_typedb_msgs.srv.Query_Request.FETCH, "Fetch Applicable Tactics");
 			if(results.isEmpty()) {
 				java.lang.System.out.println("No Applicable Tactics");
 				return;
@@ -707,6 +697,35 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 				}
 				java.lang.System.out.println("something unique");
 			}
+
+			List<ros_typedb_msgs.msg.IndexList> index_lists = null;
+			int result_index = -1;
+
+			for (int i = 0; i < results.size(); i++) {
+				ros_typedb_msgs.msg.ResultTree result_tree = results.get(i);
+				for (ros_typedb_msgs.msg.QueryResult q_result : result_tree.getResults()) {
+					if (q_result.getType() == ros_typedb_msgs.msg.QueryResult.SUB_QUERY && q_result.getSubQueryName().equals(TQLGenerator.PARAM_VALUES_SUBQUERY_NAME)) {
+						index_lists = q_result.getChildrenIndex();
+						result_index = i;
+					}
+				}
+			}
+
+			if (index_lists == null || result_index < 0) {
+				java.lang.System.out.println("No index list found in results");
+				throw new IllegalStateException("No index list found in results");
+			}
+
+			ros_typedb_msgs.msg.ResultTree result_tree = results.get(result_index);
+			aal_msgs.msg.Adaptation adap = processSetParameter(result_tree, index_lists);
+			if(requestAdaptation(new ArrayList<>(Arrays.asList(adap))))
+			{
+				String featureName = RosTypeDBInterface.extractStringAttribute(result_tree,TQLGenerator.FEATURE_VAR,"feature_name");
+				String x = generator.generateUpdateHasParamValue(featureName);
+				requestTypedbQuery(x, ros_typedb_msgs.srv.Query_Request.UPDATE, "Update has_param_value");
+				response.setSuccess(true);
+			}
+			
 		}
 
 
@@ -1004,18 +1023,23 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 		java.lang.System.out.println("Not loading models on start");
 	}
 
-	boolean skipping = false;
-	boolean checkGraph = false;
-
-	
-
+	boolean ready = true;
+	boolean checkGraph = true;
+	boolean checkParameters = false;
+	String nodeStarts = "";
+	Namer namer = new Namer();
+	generator = new TQLGenerator(namer);
 
 	if (modelsLoaded && checkGraph)
 	{
-		List<system.RosNode> rosNodesInRossystems = allRossystemNodes();
+		List<system.RosNode>  rosNodesInRossystems = allRossystemNodes();
 		Set<String> knownNodeNames = new HashSet<>();
 		for (system.RosNode rosNode : rosNodesInRossystems) {
-			knownNodeNames.add(rosNode.getName());
+			String name = rosNode.getName();
+			if(name.charAt(0) == '/') {
+					name = name.substring(1);
+				}
+			knownNodeNames.add(name);
 		}
 		
 		
@@ -1036,7 +1060,7 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 		java.lang.System.out.println("Are all rossystem nodes are present? " + allKnown);
 
 		for (String nodeName : graphNodeNames) {
-			java.lang.System.out.println("Node in computation graph: " + nodeName);
+			java.lang.System.out.println("Mode in computation graph: " + nodeName);
 		}
 
 		if (!allKnown) {
@@ -1048,79 +1072,87 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 			}
 		} else {
 			java.lang.System.out.println("All nodes in the rossystem files are in the computation graph.");
+			if(checkParameters) {
+				java.lang.System.out.println("Now checking parameters of all nodes...");
+			
+				for (system.RosNode rosNode : rosNodesInRossystems) {
+					java.lang.System.out.println("\n---------------------\n");
+					List<String> parameterNames = rosNode.getFrom().getParameter().stream()
+						.map(ros.Parameter::getName)
+						.collect(java.util.stream.Collectors.toList());
 
-			for (system.RosNode rosNode : rosNodesInRossystems) {
-				java.lang.System.out.println("\n---------------------\n");
-				List<String> parameterNames = rosNode.getFrom().getParameter().stream()
-					.map(ros.Parameter::getName)
-					.collect(java.util.stream.Collectors.toList());
 
+					String nodeName = rosNode.getName();
 
-				String nodeName = rosNode.getName();
+					Client<rcl_interfaces.srv.GetParameters> client =
+						getNode().<rcl_interfaces.srv.GetParameters>createClient(
+							rcl_interfaces.srv.GetParameters.class, "/" + nodeName + "/get_parameters");
 
-				Client<rcl_interfaces.srv.GetParameters> client =
-					getNode().<rcl_interfaces.srv.GetParameters>createClient(
-						rcl_interfaces.srv.GetParameters.class, "/" + nodeName + "/get_parameters");
+					if(parameterNames.isEmpty()) {
+						continue;
+					}
+					rcl_interfaces.srv.GetParameters_Request request = new rcl_interfaces.srv.GetParameters_Request();
+					request.setNames(parameterNames);
+					java.lang.System.out.println("Requesting parameters for node: " + nodeName);
 
-				if(parameterNames.isEmpty()) {
-					continue;
-				}
-				rcl_interfaces.srv.GetParameters_Request request = new rcl_interfaces.srv.GetParameters_Request();
-				request.setNames(parameterNames);
-				java.lang.System.out.println("Requesting parameters for node: " + nodeName);
+					if (client.waitForService(Duration.ofSeconds(5))) {
+						Future<rcl_interfaces.srv.GetParameters_Response> future = client.asyncSendRequest(request);
+						try {
+							rcl_interfaces.srv.GetParameters_Response response = future.get();
+							if (response.getValues().isEmpty()) {
+								java.lang.System.out.println("NO parameters found for node " + nodeName + " one of the parameters requested might not exist");
+								continue;
+							}
+							for (int i = 0; i < response.getValues().size(); i++) {
+								rcl_interfaces.msg.ParameterValue value = response.getValues().get(i);
+								String param_name = parameterNames.get(i);
+								ros.ParameterValue current_value = RosToolingSupport.convertParameterValue(value);
 
-				if (client.waitForService(Duration.ofSeconds(5))) {
-					Future<rcl_interfaces.srv.GetParameters_Response> future = client.asyncSendRequest(request);
-					try {
-						rcl_interfaces.srv.GetParameters_Response response = future.get();
-						if (response.getValues().isEmpty()) {
-							java.lang.System.out.println("NO parameters found for node " + nodeName + " one of the parameters requested might not exist");
-							continue;
-						}
-						for (int i = 0; i < response.getValues().size(); i++) {
-							rcl_interfaces.msg.ParameterValue value = response.getValues().get(i);
-							String param_name = parameterNames.get(i);
-							ros.ParameterValue current_value = RosToolingSupport.convertParameterValue(value);
-
-							for(ros.Parameter param : rosNode.getFrom().getParameter()) {
-								Object running_value = RosToolingSupport.valueOf(current_value);
-								Object model_value = RosToolingSupport.valueOf(param.getValue());
-								boolean equal = false;
-								if(param.getName().equals(param_name)) {
-									if(!running_value.equals(model_value))
-									{
-										if (param.getType() instanceof ros.ParameterArrayType && 
-											running_value instanceof List<?> &&
-											((List<?>) running_value).isEmpty() &&
-											(model_value == null || (model_value instanceof List<?> && ((List<?>) model_value).isEmpty()))) {
-											continue;
-										}
-										// Check if the parameter exists within rosNode.getParameters()
-										system.RosParameter rosParam = RosToolingSupport.findRosParameter(rosNode, param_name);
-										if(rosParam != null) {
-											if(RosToolingSupport.valueOf(current_value).equals(RosToolingSupport.valueOf(rosParam.getValue())))
-											{
+								for(ros.Parameter param : rosNode.getFrom().getParameter()) {
+									Object running_value = RosToolingSupport.valueOf(current_value);
+									Object model_value = RosToolingSupport.valueOf(param.getValue());
+									boolean equal = false;
+									if(param.getName().equals(param_name)) {
+										if(!running_value.equals(model_value))
+										{
+											if (param.getType() instanceof ros.ParameterArrayType && 
+												running_value instanceof List<?> &&
+												((List<?>) running_value).isEmpty() &&
+												(model_value == null || (model_value instanceof List<?> && ((List<?>) model_value).isEmpty()))) {
 												continue;
 											}
+											// Check if the parameter exists within rosNode.getParameters()
+											system.RosParameter rosParam = RosToolingSupport.findRosParameter(rosNode, param_name);
+											if(rosParam != null) {
+												if(RosToolingSupport.valueOf(current_value).equals(RosToolingSupport.valueOf(rosParam.getValue())))
+												{
+													continue;
+												}
+											}
+											throw new IllegalStateException("Parameter value for " + param.getName() + " in node " + nodeName + " is different than in the .ros2 file. This should not happen, please check your models.");
 										}
-										throw new IllegalStateException("Parameter value for " + param.getName() + " in node " + nodeName + " is different than in the .ros2 file. This should not happen, please check your models.");
 									}
 								}
 							}
 						}
-					}
-					catch (Exception e) {
-						java.lang.System.out.println("Error while getting parameters for node " + nodeName);
-						e.printStackTrace();
-					}
+						catch (Exception e) {
+							java.lang.System.out.println("Error while getting parameters for node " + nodeName);
+							e.printStackTrace();
+						}
 
+					}
+					else {
+						java.lang.System.out.println("Client for node " + nodeName + " is not available.");
+					}
 				}
-				else {
-					java.lang.System.out.println("Client for node " + nodeName + " is not available.");
-				}
+				java.lang.System.out.println("Done checking all the nodes in the rossystem files.");
 			}
-			java.lang.System.out.println("Done checking all the nodes in the rossystem files.");
-		}
+			DateTimeFormatter fmt = new DateTimeFormatterBuilder().appendInstant(3).toFormatter();
+
+			String current_time = fmt.format(Instant.now()).replace("Z", "");
+			nodeStarts = generator.generateInsertStartTime(rosNodesInRossystems, current_time);
+			ready = true;
+	}
 
 
 	}
@@ -1128,9 +1160,7 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 	
 
 	
-	if(!skipping) {
-	Namer namer = new Namer();
-	generator = new TQLGenerator(namer);
+	if(ready) {
 	String y = "";
 	for (ResolutionModel resModel : generator.getResolutionModel(tacticsModel,tacticsModelResource)) {
 		y = y + generator.generateArchitectureInsertQuery(resModel);
@@ -1147,9 +1177,13 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
 	String x = generator.generateTQL(tacticsModel, tacticsModelResource); // one specific instance of a .tactics file
 	
 	String temp = generator.generateInsertQuery(requirementsModel,"rebetmc");
-	java.lang.System.out.println(y+x);
-	java.lang.System.out.println(temp);
-	requestTypedbQuery(y + x, ros_typedb_msgs.srv.Query_Request.INSERT);
+
+			
+	// java.lang.System.out.println(temp);
+	// java.lang.System.out.println(y + x);
+	requestTypedbQuery(y + x, ros_typedb_msgs.srv.Query_Request.INSERT, "Initial Model Load");
+	java.lang.System.out.println(nodeStarts);
+	requestTypedbQuery(nodeStarts, ros_typedb_msgs.srv.Query_Request.INSERT, "Node Start Times");
 	// processTactics();
 	java.lang.System.out.println("Doing the measures!");
 	requestMeasures();
@@ -1162,7 +1196,7 @@ private rcl_interfaces.msg.ParameterValue requestContextVar(String variable_name
     resSet,
     RosPackage.Literals.ARTIFACT__NODE // or whatever reference you want to check
 	);
-  	}
+	}
     // java.lang.System.out.println("Number of tactics: " + tacticsModel.getAdaptationRules().size());
   }
 
